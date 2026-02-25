@@ -67,6 +67,9 @@ class NavLoopMonitor(Node):
         self.state = SharedState()
         self._lock = threading.Lock()
         self._shutdown = False
+        self._current_step = "STEP 1: Starting simulation"
+        self._step_started_at = datetime.now()
+        self._step_history: list[str] = []
 
         amcl_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -167,13 +170,38 @@ class NavLoopMonitor(Node):
                 return "STEP 5: Goal sent, waiting motion"
             return "STEP 5: Waiting goal (Nav2 Goal)"
 
+    def step_number(self, step_text: str) -> int:
+        if step_text.startswith("STEP 1"):
+            return 1
+        if step_text.startswith("STEP 2"):
+            return 2
+        if step_text.startswith("STEP 3"):
+            return 3
+        if step_text.startswith("STEP 4"):
+            return 4
+        if step_text.startswith("STEP 5"):
+            return 5
+        if step_text.startswith("STEP 6"):
+            return 6
+        return 0
+
     def render(self):
         self.refresh_node_health()
         step = self.infer_step()
+        now = datetime.now()
+        if step != self._current_step:
+            ts = now.strftime("%H:%M:%S")
+            self._step_history.append(f"{ts}  {self._current_step} -> {step}")
+            self._step_history = self._step_history[-6:]
+            self._current_step = step
+            self._step_started_at = now
+
+        active_num = self.step_number(self._current_step)
+        elapsed = (now - self._step_started_at).total_seconds()
+
         with self._lock:
             s = self.state
             goal_xy = f"x={fmt(s.goal_x)}, y={fmt(s.goal_y)}"
-            now = datetime.now()
 
             # Component-level loop states.
             # Consider local plan "fresh" only if updated recently.
@@ -209,7 +237,18 @@ class NavLoopMonitor(Node):
         sys.stdout.write("==== TurtleBot4 Maze Loop Monitor (Subscriber Mode) ====\n")
         sys.stdout.write(f"World: {self.world_name}\n")
         sys.stdout.write(f"Map:   {self.map_path}\n\n")
-        sys.stdout.write(f"Current Loop Step: {step}\n\n")
+        sys.stdout.write(f"Current Loop Step: {self._current_step}  (for {elapsed:.1f}s)\n")
+        sys.stdout.write("Step Progress: ")
+        labels = ["Sim", "Loc", "Nav2", "InitPose", "Navigate", "Stop"]
+        parts = []
+        for i, label in enumerate(labels, start=1):
+            if i < active_num:
+                parts.append(f"[{i}:{label}:DONE]")
+            elif i == active_num:
+                parts.append(f"[{i}:{label}:NOW ]")
+            else:
+                parts.append(f"[{i}:{label}:WAIT]")
+        sys.stdout.write(" ".join(parts) + "\n\n")
         sys.stdout.write("[Node Health]\n")
         sys.stdout.write(f"  simulation (/clock_bridge):         {'YES' if s.sim_ok else 'NO'}\n")
         sys.stdout.write(f"  localization (/map_server,/amcl):   {'YES' if s.loc_ok else 'NO'}\n")
@@ -225,6 +264,13 @@ class NavLoopMonitor(Node):
             f"  DWB:{dwb_state} | local_path:{local_path_state}({s.local_plan_points}) | "
             f"motor_cmd:{motor_state} | robot_moves:{move_state} | stop:{stop_state}\n\n"
         )
+        sys.stdout.write("[Recent Step Transitions]\n")
+        if self._step_history:
+            for item in self._step_history[-5:]:
+                sys.stdout.write(f"  {item}\n")
+        else:
+            sys.stdout.write("  (no transitions yet)\n")
+        sys.stdout.write("\n")
         sys.stdout.write("Controls: press Esc in this terminal to stop all.\n")
         sys.stdout.flush()
 
