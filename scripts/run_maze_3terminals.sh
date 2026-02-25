@@ -124,6 +124,7 @@ CMD_LOC="${COMMON_ENV} && ros2 launch turtlebot4_navigation localization.launch.
 # Terminal 3: Nav2 stack.
 CMD_NAV2="${COMMON_ENV} && ros2 launch turtlebot4_navigation nav2.launch.py use_sim_time:=true"
 MONITOR_CMD="${COMMON_ENV} && unset PYTHONHOME CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_SHLVL _CE_CONDA _CE_M && echo \"[INFO] monitor python: ${MONITOR_PY}\" && ${MONITOR_PY} ${WS}/scripts/nav_loop_monitor.py ${WORLD_NAME} ${MAP_PATH}"
+LOOP_CHAIN_CMD="${COMMON_ENV} && unset PYTHONHOME CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_SHLVL _CE_CONDA _CE_M && ${MONITOR_PY} ${WS}/scripts/loop_chain_stream.py"
 
 cleanup_old_processes
 
@@ -139,6 +140,10 @@ wait_for_map_tf 20 || true
 
 echo "[INFO] opening terminal 3: nav2"
 launch_in_terminal "TB4 Maze Nav2" "${CMD_NAV2}"
+sleep 2
+
+echo "[INFO] opening terminal 4: loop chain stream"
+launch_in_terminal "TB4 Loop Chain Stream" "${LOOP_CHAIN_CMD}"
 
 echo "[INFO] all three terminals launched."
 echo "In RViz: click '2D Pose Estimate' once, then send 'Nav2 Goal'."
