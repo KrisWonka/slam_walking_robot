@@ -51,6 +51,8 @@ cleanup_old_processes() {
   pkill -f "/bt_navigator" || true
   pkill -f "/controller_server" || true
   pkill -f "/planner_server" || true
+  pkill -f "loop_chain_stream.py" || true
+  pkill -f "nav_loop_monitor.py" || true
 
   pkill -f "ign gazebo" || true
   pkill -f "gz sim" || true
