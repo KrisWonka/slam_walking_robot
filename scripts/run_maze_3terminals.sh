@@ -78,6 +78,29 @@ ensure_localization_active() {
   fi
 }
 
+wait_for_map_tf() {
+  local max_wait_s="${1:-20}"
+  local start_ts now elapsed
+  start_ts="$(date +%s)"
+  echo "[INFO] waiting for TF map -> base_link (timeout: ${max_wait_s}s)..."
+
+  while true; do
+    if eval "${COMMON_ENV} && timeout 1 ros2 run tf2_ros tf2_echo map base_link >/tmp/tb4_tf_check.txt 2>&1"; then
+      echo "[INFO] TF map -> base_link is available."
+      return 0
+    fi
+
+    now="$(date +%s)"
+    elapsed=$((now - start_ts))
+    if (( elapsed >= max_wait_s )); then
+      echo "[WARN] TF map -> base_link not ready after ${max_wait_s}s."
+      echo "[WARN] You can still continue, but Nav2 may report map-frame timeout until initial pose is set."
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 trap cleanup_on_exit INT TERM
 
 # Put ROS launch logs under workspace for easier debugging.
@@ -112,6 +135,7 @@ echo "[INFO] opening terminal 2: localization"
 launch_in_terminal "TB4 Maze Localization" "${CMD_LOC}"
 sleep 4
 ensure_localization_active
+wait_for_map_tf 20 || true
 
 echo "[INFO] opening terminal 3: nav2"
 launch_in_terminal "TB4 Maze Nav2" "${CMD_NAV2}"
