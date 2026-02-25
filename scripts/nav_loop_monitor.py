@@ -67,6 +67,8 @@ class NavLoopMonitor(Node):
         self.state = SharedState()
         self._lock = threading.Lock()
         self._shutdown = False
+        # Monotonic loop stage (1 -> 7), avoids UI jumping backward.
+        self._stage_idx = 1
 
         amcl_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -140,36 +142,63 @@ class NavLoopMonitor(Node):
             self.state.loc_ok = ("map_server" in names and "amcl" in names)
             self.state.nav_ok = ("bt_navigator" in names and "controller_server" in names)
 
-    def infer_step(self) -> str:
+    def stage_label(self, idx: int) -> str:
+        labels = {
+            1: "S1/7 Start simulation",
+            2: "S2/7 Start localization",
+            3: "S3/7 Start Nav2",
+            4: "S4/7 Wait initial pose",
+            5: "S5/7 Wait/send goal",
+            6: "S6/7 Navigating",
+            7: "S7/7 Stop completed",
+        }
+        return labels.get(idx, f"S{idx}/7 Unknown")
+
+    def infer_stage(self) -> tuple[int, str]:
         with self._lock:
             s = self.state
-            moving = False
-            if s.odom_vx is not None and abs(s.odom_vx) > 0.02:
-                moving = True
-            if s.odom_wz is not None and abs(s.odom_wz) > 0.08:
-                moving = True
+            robot_moving = (
+                s.odom_vx is not None
+                and s.odom_wz is not None
+                and (abs(s.odom_vx) > 0.02 or abs(s.odom_wz) > 0.08)
+            )
+            motor_active = (
+                s.cmd_vx is not None
+                and s.cmd_wz is not None
+                and (abs(s.cmd_vx) > 0.01 or abs(s.cmd_wz) > 0.05)
+            )
+            initial_pose_ready = (s.amcl_x is not None and s.amcl_y is not None)
+            goal_sent = (s.goal_x is not None and s.goal_y is not None)
+            goal_active = s.nav_status_text in ("ACCEPTED", "EXECUTING")
+            stop_done = (
+                s.nav_status_text == "SUCCEEDED"
+                and not robot_moving
+                and (s.cmd_vx is None or abs(s.cmd_vx) <= 0.01)
+                and (s.cmd_wz is None or abs(s.cmd_wz) <= 0.05)
+            )
 
-            if not s.sim_ok:
-                return "STEP 1: Starting simulation"
-            if not s.loc_ok:
-                return "STEP 2: Starting localization"
-            if not s.nav_ok:
-                return "STEP 3: Starting Nav2"
-            if s.amcl_x is None or s.amcl_y is None:
-                return "STEP 4: Waiting initial pose (2D Pose Estimate)"
-            if s.nav_status_text in ("EXECUTING", "ACCEPTED") or moving:
-                return "STEP 5: Navigating to goal"
-            if s.nav_status_text == "SUCCEEDED":
-                return "STEP 6: Goal reached"
+            # Monotonic stage promotion.
+            if self._stage_idx < 2 and s.sim_ok:
+                self._stage_idx = 2
+            if self._stage_idx < 3 and s.loc_ok:
+                self._stage_idx = 3
+            if self._stage_idx < 4 and s.nav_ok:
+                self._stage_idx = 4
+            if self._stage_idx < 5 and initial_pose_ready:
+                self._stage_idx = 5
+            if self._stage_idx < 6 and (goal_sent or goal_active or robot_moving or motor_active):
+                self._stage_idx = 6
+            if self._stage_idx < 7 and stop_done:
+                self._stage_idx = 7
+
+            label = self.stage_label(self._stage_idx)
             if s.nav_status_text == "ABORTED":
-                return "STEP 6: Navigation aborted"
-            if s.goal_x is not None and s.goal_y is not None:
-                return "STEP 5: Goal sent, waiting motion"
-            return "STEP 5: Waiting goal (Nav2 Goal)"
+                label = f"{label} (ABORTED)"
+            return self._stage_idx, label
 
     def render(self):
         self.refresh_node_health()
-        step = self.infer_step()
+        stage_idx, stage_label = self.infer_stage()
         with self._lock:
             s = self.state
             goal_xy = f"x={fmt(s.goal_x)}, y={fmt(s.goal_y)}"
@@ -209,7 +238,8 @@ class NavLoopMonitor(Node):
         sys.stdout.write("==== TurtleBot4 Maze Loop Monitor (Subscriber Mode) ====\n")
         sys.stdout.write(f"World: {self.world_name}\n")
         sys.stdout.write(f"Map:   {self.map_path}\n\n")
-        sys.stdout.write(f"Current Loop Step: {step}\n\n")
+        sys.stdout.write(f"Current Loop Step: {stage_label}\n")
+        sys.stdout.write(f"Loop Progress: {stage_idx}/7\n\n")
         sys.stdout.write("[Node Health]\n")
         sys.stdout.write(f"  simulation (/clock_bridge):         {'YES' if s.sim_ok else 'NO'}\n")
         sys.stdout.write(f"  localization (/map_server,/amcl):   {'YES' if s.loc_ok else 'NO'}\n")
