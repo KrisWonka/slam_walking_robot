@@ -13,7 +13,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped, Twist
-from nav_msgs.msg import Odometry, Path
+from nav_msgs.msg import Odometry
 from action_msgs.msg import GoalStatusArray
 
 
@@ -35,8 +35,6 @@ class SharedState:
     last_goal_time: datetime | None = None
     last_status_time: datetime | None = None
     last_odom_time: datetime | None = None
-    last_local_plan_time: datetime | None = None
-    local_plan_points: int = 0
 
 
 def status_from_code(code: int | None) -> str:
@@ -86,9 +84,6 @@ class NavLoopMonitor(Node):
         self.create_subscription(Odometry, "/odom", self.on_odom, default_qos)
         self.create_subscription(PoseStamped, "/goal_pose", self.on_goal_pose, default_qos)
         self.create_subscription(GoalStatusArray, "/navigate_to_pose/_action/status", self.on_nav_status, default_qos)
-        # DWB local path is commonly published on /local_plan (or namespaced equivalents).
-        self.create_subscription(Path, "/local_plan", self.on_local_plan, default_qos)
-        self.create_subscription(Path, "/controller_server/local_plan", self.on_local_plan, default_qos)
 
     def request_stop(self):
         with self._lock:
@@ -127,11 +122,6 @@ class NavLoopMonitor(Node):
                 self.state.nav_status_code = int(latest)
                 self.state.nav_status_text = status_from_code(self.state.nav_status_code)
                 self.state.last_status_time = datetime.now()
-
-    def on_local_plan(self, msg: Path):
-        with self._lock:
-            self.state.last_local_plan_time = datetime.now()
-            self.state.local_plan_points = len(msg.poses)
 
     def refresh_node_health(self):
         names = set(self.get_node_names())
@@ -175,49 +165,7 @@ class NavLoopMonitor(Node):
             goal_xy = f"x={fmt(s.goal_x)}, y={fmt(s.goal_y)}"
             now = datetime.now()
 
-            # Component-level loop states.
-            # Consider local plan "fresh" only if updated recently.
-            local_plan_fresh = (
-                s.last_local_plan_time is not None
-                and (now - s.last_local_plan_time).total_seconds() < 1.5
-                and s.local_plan_points > 0
-            )
-            motor_active = (
-                s.cmd_vx is not None
-                and s.cmd_wz is not None
-                and (abs(s.cmd_vx) > 0.01 or abs(s.cmd_wz) > 0.05)
-            )
-            robot_moving = (
-                s.odom_vx is not None
-                and s.odom_wz is not None
-                and (abs(s.odom_vx) > 0.02 or abs(s.odom_wz) > 0.08)
-            )
-            # "Stop" means navigation succeeded and robot motion is near zero.
-            stop_done = (
-                s.nav_status_text == "SUCCEEDED"
-                and not robot_moving
-                and (s.cmd_vx is None or abs(s.cmd_vx) <= 0.01)
-                and (s.cmd_wz is None or abs(s.cmd_wz) <= 0.05)
-            )
-            dwb_state = "OK" if s.nav_ok and local_plan_fresh else "WAIT"
-            local_path_state = "OK" if local_plan_fresh else "WAIT"
-            motor_state = "ACTIVE" if motor_active else "IDLE"
-            move_state = "YES" if robot_moving else "NO"
-            stop_state = "YES" if stop_done else "NO"
-            # Single "current chain step" for your loop:
-            # DWB -> local path -> motor command -> robot moves -> stop
-            if stop_done:
-                chain_step = "5/5 stop (done)"
-            elif robot_moving:
-                chain_step = "4/5 robot_moves"
-            elif motor_active:
-                chain_step = "3/5 motor_command"
-            elif local_plan_fresh:
-                chain_step = "2/5 local_path"
-            elif s.nav_ok:
-                chain_step = "1/5 dwb"
-            else:
-                chain_step = "0/5 waiting_nav2"
+            _ = now
 
         sys.stdout.write("\x1b[2J\x1b[H")
         sys.stdout.write("==== TurtleBot4 Maze Loop Monitor (Subscriber Mode) ====\n")
@@ -234,12 +182,6 @@ class NavLoopMonitor(Node):
         sys.stdout.write(f"  odom_twist: vx={fmt(s.odom_vx)}, wz={fmt(s.odom_wz)}\n")
         sys.stdout.write(f"  goal_pose:  {goal_xy}\n")
         sys.stdout.write(f"  goal_state: {s.nav_status_text}\n\n")
-        sys.stdout.write("[Loop Chain]\n")
-        sys.stdout.write(f"  current: {chain_step}\n")
-        sys.stdout.write(
-            f"  DWB:{dwb_state} | local_path:{local_path_state}({s.local_plan_points}) | "
-            f"motor_cmd:{motor_state} | robot_moves:{move_state} | stop:{stop_state}\n\n"
-        )
         sys.stdout.write("Controls: press Esc in this terminal to stop all.\n")
         sys.stdout.flush()
 
