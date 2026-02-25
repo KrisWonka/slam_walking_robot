@@ -37,6 +37,9 @@ class LoopChainStream(Node):
         self.odom_wz = 0.0
         self.nav_status_code: int | None = None
         self.last_emitted = ""
+        # Heartbeat cycle state (for visible loop progression).
+        self.phase = 0
+        self.cycle = 0
 
         default_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -66,16 +69,29 @@ class LoopChainStream(Node):
     def on_local_plan(self, msg: Path):
         self.local_plan_points = len(msg.poses)
         self.last_local_plan_ts = datetime.now()
+        # Every fresh local plan marks a new loop cycle.
+        if self.nav_ok:
+            self.cycle += 1
+            # Show explicit return to DWB before entering local_path.
+            self.phase = 1
+            self.emit_chain_if_changed()
+            self.phase = 2
         self.emit_chain_if_changed()
 
     def on_cmd_vel(self, msg: Twist):
         self.cmd_vx = msg.linear.x
         self.cmd_wz = msg.angular.z
+        motor_active = abs(self.cmd_vx) > 0.01 or abs(self.cmd_wz) > 0.05
+        if motor_active and self.phase < 3:
+            self.phase = 3
         self.emit_chain_if_changed()
 
     def on_odom(self, msg: Odometry):
         self.odom_vx = msg.twist.twist.linear.x
         self.odom_wz = msg.twist.twist.angular.z
+        robot_moves = abs(self.odom_vx) > 0.02 or abs(self.odom_wz) > 0.08
+        if robot_moves and self.phase < 4:
+            self.phase = 4
         self.emit_chain_if_changed()
 
     def on_nav_status(self, msg: GoalStatusArray):
@@ -86,6 +102,10 @@ class LoopChainStream(Node):
     def on_timer(self):
         names = set(self.get_node_names())
         self.nav_ok = ("bt_navigator" in names and "controller_server" in names)
+        if not self.nav_ok:
+            self.phase = 0
+        elif self.phase == 0:
+            self.phase = 1
         self.emit_chain_if_changed()
 
     def infer_chain(self):
@@ -100,25 +120,32 @@ class LoopChainStream(Node):
         nav_state = status_from_code(self.nav_status_code)
         stop_done = nav_state == "SUCCEEDED" and not robot_moves and not motor_active
 
+        # Keep a state-machine style "current step" so loop progression is visible.
         if stop_done:
-            current = "5/5 stop"
-        elif robot_moves:
-            current = "4/5 robot_moves"
-        elif motor_active:
-            current = "3/5 motor_command"
-        elif local_path_ok:
-            current = "2/5 local_path"
-        elif self.nav_ok:
-            current = "1/5 dwb"
-        else:
-            current = "0/5 waiting_nav2"
+            self.phase = 5
+        elif self.phase == 2 and not local_path_ok:
+            # If local path is stale, return to DWB wait state.
+            self.phase = 1 if self.nav_ok else 0
+        elif self.phase == 4 and not robot_moves and nav_state != "SUCCEEDED":
+            # Robot stopped but goal not done yet -> waiting next DWB/local-path cycle.
+            self.phase = 1 if self.nav_ok else 0
+
+        phase_to_label = {
+            0: "0/5 waiting_nav2",
+            1: "1/5 dwb",
+            2: "2/5 local_path",
+            3: "3/5 motor_command",
+            4: "4/5 robot_moves",
+            5: "5/5 stop",
+        }
+        current = phase_to_label.get(self.phase, "0/5 waiting_nav2")
 
         return current, local_path_ok, motor_active, robot_moves, stop_done, nav_state
 
     def emit_chain_if_changed(self):
         current, local_path_ok, motor_active, robot_moves, stop_done, nav_state = self.infer_chain()
         line = (
-            f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]} | current={current} | "
+            f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]} | cycle={self.cycle} | current={current} | "
             f"dwb={'OK' if self.nav_ok else 'WAIT'} | "
             f"local_path={'OK' if local_path_ok else 'WAIT'}({self.local_plan_points}) | "
             f"motor={'ACTIVE' if motor_active else 'IDLE'}({self.cmd_vx:.3f},{self.cmd_wz:.3f}) | "
