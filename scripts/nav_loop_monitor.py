@@ -204,6 +204,20 @@ class NavLoopMonitor(Node):
             motor_state = "ACTIVE" if motor_active else "IDLE"
             move_state = "YES" if robot_moving else "NO"
             stop_state = "YES" if stop_done else "NO"
+            # Single "current chain step" for your loop:
+            # DWB -> local path -> motor command -> robot moves -> stop
+            if stop_done:
+                chain_step = "5/5 stop (done)"
+            elif robot_moving:
+                chain_step = "4/5 robot_moves"
+            elif motor_active:
+                chain_step = "3/5 motor_command"
+            elif local_plan_fresh:
+                chain_step = "2/5 local_path"
+            elif s.nav_ok:
+                chain_step = "1/5 dwb"
+            else:
+                chain_step = "0/5 waiting_nav2"
 
         sys.stdout.write("\x1b[2J\x1b[H")
         sys.stdout.write("==== TurtleBot4 Maze Loop Monitor (Subscriber Mode) ====\n")
@@ -221,6 +235,7 @@ class NavLoopMonitor(Node):
         sys.stdout.write(f"  goal_pose:  {goal_xy}\n")
         sys.stdout.write(f"  goal_state: {s.nav_status_text}\n\n")
         sys.stdout.write("[Loop Chain]\n")
+        sys.stdout.write(f"  current: {chain_step}\n")
         sys.stdout.write(
             f"  DWB:{dwb_state} | local_path:{local_path_state}({s.local_plan_points}) | "
             f"motor_cmd:{motor_state} | robot_moves:{move_state} | stop:{stop_state}\n\n"
