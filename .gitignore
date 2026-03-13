@@ -2,18 +2,25 @@
 build/
 install/
 log/
-.ros_logs/
 
-# Python cache
+# Python
 __pycache__/
 *.pyc
-*.pyo
+*.egg-info/
 
-# IDE/editor
+# Arduino build artifacts
+arduino/test/build/
+arduino/motor_test/build/
+arduino/motor_diag/build/
+arduino/rotation_test/build/
+arduino/test_hybrid/build/
+*.hex
+*.elf
+
+# IDE
 .vscode/
 .idea/
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
-
